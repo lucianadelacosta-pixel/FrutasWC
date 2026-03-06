@@ -105,68 +105,51 @@ def generar_pdf_wc(datos):
 # --- 4. INTERFAZ ---
 st.title("🍎 FRUTAS WC")
 c_nav = st.columns(4)
-if c_nav[0].button("🏠 Inicio"): st.session_state.nav = "Inicio"
-if c_nav[1].button("📖 Nosotros"): st.session_state.nav = "Nosotros"
-if c_nav[2].button("🛒 Crear Pedido"): st.session_state.nav = "Crear Pedido"
-if c_nav[3].button("🔎 Mi Pedido"): st.session_state.nav = "Estado"
-
-st.divider()
+if c_nav[2].button("🛒 Crear Pedido"): 
+    st.session_state.nav = "Crear Pedido"
+    st.session_state.pedido_exitoso = False
 
 if st.session_state.nav == "Crear Pedido":
-    st.header("🛒 Armá tu Pedido")
-    
-    cli = st.text_input("Nombre del Cliente / Negocio")
-    dom = st.text_input("Domicilio de Entrega")
-    mail = st.text_input("Email para el PDF")
-    
-    c_t1, c_t2, c_t3 = st.columns([2,1,1])
-    fec = c_t1.date_input("Fecha", min_value=datetime.now().date() + timedelta(days=1))
-    h1 = c_t2.time_input("Desde", value=time(8,0))
-    h2 = c_t3.time_input("Hasta", value=time(14,0))
-
-    st.write("---")
-    st.subheader("1. Seleccioná del catálogo")
-    cp, cc, ck, cb = st.columns([3, 1, 1, 1])
-    item = cp.selectbox("Producto", TODOS)
-    cant = cc.number_input("Bultos", min_value=0, step=1, key="c_main")
-    kg = ck.number_input("Kg.", min_value=0.0, step=0.5, key="k_main")
-    if cb.button("➕ Agregar"):
-        if cant > 0 or kg > 0:
-            agregar_item(item, cant, kg, "CATÁLOGO")
-            st.rerun()
-
-    if st.session_state.lista:
-        st.write("### 📋 Tu Pedido Actual")
-        df = pd.DataFrame(st.session_state.lista)
-        st.dataframe(df, hide_index=True, use_container_width=True)
-        if st.button("🗑️ Vaciar Lista"):
+    if st.session_state.pedido_exitoso:
+        st.markdown(f'<div class="success-msg">✅ Pedido solicitado con éxito<br>Número de pedido: {st.session_state.nro_pedido}</div>', unsafe_allow_html=True)
+        if st.button("Hacer otro pedido"):
+            st.session_state.pedido_exitoso = False
             st.session_state.lista = []
             st.rerun()
-
-    with st.expander("➕ Agregar producto que NO está en la lista"):
-        ce1, ce2, ce3, ce4 = st.columns([3, 1, 1, 1])
-        e_nom = ce1.text_input("Nombre producto especial")
-        e_can = ce2.number_input("Bultos", min_value=0, step=1, key="c_esp")
-        e_kg = ce3.number_input("Kg.", min_value=0.0, step=0.5, key="k_esp")
-        if ce4.button("✔ Añadir Especial"):
-            if e_nom:
-                agregar_item(e_nom, e_can, e_kg, "ESPECIAL")
+    else:
+        cli = st.text_input("Nombre del Cliente")
+        dom = st.text_input("Domicilio")
+        
+        col_prod, col_c, col_k, col_btn = st.columns([3, 1, 1, 1])
+        item = col_prod.selectbox("Producto", PRODUCTOS)
+        cant = col_c.number_input("Bultos", min_value=0, step=1)
+        kg = col_k.number_input("Kg.", min_value=0.0, step=0.5)
+        
+        if col_btn.button("➕"):
+            if cant > 0 or kg > 0:
+                agregar_item(item, cant, kg, "CATÁLOGO")
                 st.rerun()
 
-    if st.session_state.lista:
-        if st.button("🚀 CONFIRMAR Y GENERAR PDF", use_container_width=True):
-            if cli and mail and dom:
-                datos = {
-                    "Cliente": cli.upper(), "Domicilio": dom,
-                    "Fecha": fec.strftime("%d/%m/%Y"),
-                    "Horario": f"{h1.strftime('%H:%M')} a {h2.strftime('%H:%M')}",
-                    "Detalle": st.session_state.lista
-                }
-                pdf_io = generar_pdf_wc(datos)
-                st.success(f"¡Pedido confirmado para {cli}!")
-                st.download_button("📥 Descargar Nota de Pedido", data=pdf_io, file_name=f"Pedido_WC_{cli}.pdf", mime="application/pdf")
-            else:
-                st.error("Completá Nombre, Domicilio y Email.")
+        if st.session_state.lista:
+            st.table(pd.DataFrame(st.session_state.lista))
+            
+            if st.button("🚀 FINALIZAR PEDIDO", use_container_width=True):
+                if cli and dom:
+                    nro = uuid.uuid4().hex[:6].upper()
+                    datos = {
+                        "Cliente": cli.upper(),
+                        "Fecha": datetime.now().strftime("%d/%m/%Y"),
+                        "Horario": "A coordinar",
+                        "Detalle": st.session_state.lista
+                    }
+                    pdf = generar_pdf_wc(datos, nro)
+                    
+                    # ACTIVAR LEYENDA
+                    st.session_state.nro_pedido = nro
+                    st.session_state.pedido_exitoso = True
+                    st.rerun()
+                else:
+                    st.error("Completa los datos de envío.")
 
 # WhatsApp
 st.markdown(f'<a class="wa-float" href="https://wa.me/543516422893" target="_blank">💬 WhatsApp</a>', unsafe_allow_html=True)
