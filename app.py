@@ -1,84 +1,52 @@
-import streamlit as st
-import pandas as pd
-from datetime import datetime, timedelta
-from io import BytesIO
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
+import re, uuid, base64, smtplib
+from email.message import EmailMessage
 
-# --- 1. CONFIGURACIÓN VISUAL ---
-st.set_page_config(page_title="FRUTAS WC", layout="wide", initial_sidebar_state="collapsed")
+EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-st.markdown("""
-    <style>
-    [data-testid="stSidebar"] {display: none;}
-    .stApp {
-        background-image: url("app/static/fondo.jpg"); 
-        background-size: cover;
-        background-position: center bottom;
-        background-attachment: fixed;
-    }
-    .main .block-container {
-        background-color: rgba(255, 255, 255, 0.96);
-        border-radius: 15px; padding: 30px; max-width: 950px;
-    }
-    .wa-float {
-        position: fixed; bottom: 20px; right: 20px;
-        background-color: #25d366; color: white; border-radius: 50px;
-        padding: 12px 20px; display: flex; align-items: center; gap: 10px;
-        text-decoration: none; z-index: 100; font-weight: bold;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+def es_email_valido(email: str) -> bool:
+    if not email: 
+        return False
+    return bool(EMAIL_REGEX.match(email.strip()))
 
-# --- 2. FUNCIÓN PARA GENERAR EL PDF ---
-def generar_pdf(datos_pedido):
-    buffer = BytesIO()
-    p = canvas.Canvas(buffer, pagesize=A4)
-    w, h = A4
+def new_order_id() -> str:
+    # ID corto para mostrar
+    return uuid.uuid4().hex[:8].upper()
 
-    p.setFont("Helvetica-Bold", 16)
-    p.drawString(50, h - 50, "FRUTAS WC - NOTA DE PEDIDO")
-    p.setFont("Helvetica", 10)
-    p.drawString(50, h - 65, "Contacto: 351 6351605 | Correo: frutasyverduraswc@gmail.com")
-    p.line(50, h - 70, 550, h - 70)
+def enviar_email_pdf(destinatario: str, asunto: str, cuerpo_txt: str, nombre_pdf: str, pdf_bytes: bytes) -> tuple[bool, str]:
+    """
+    Envía un email con el PDF adjunto usando SMTP configurado en st.secrets.
+    Retorna (ok, msg).
+    Configura en .streamlit/secrets.toml:
+      SMTP_HOST="smtp.gmail.com"
+      SMTP_PORT=587
+      SMTP_USER="tucuenta@gmail.com"
+      SMTP_PASS="tu_app_password"
+      SMTP_FROM="FRUTAS WC <tucuenta@gmail.com>"
+    """
+    try:
+        host = st.secrets.get("SMTP_HOST", "")
+        port = int(st.secrets.get("SMTP_PORT", 587))
+        user = st.secrets.get("SMTP_USER", "")
+        password = st.secrets.get("SMTP_PASS", "")
+        sender = st.secrets.get("SMTP_FROM", user)
 
-    p.setFont("Helvetica-Bold", 12)
-    p.drawString(50, h - 100, f"Cliente: {datos_pedido['Cliente']}")
-    p.setFont("Helvetica", 11)
-    p.drawString(50, h - 115, f"Fecha de Entrega: {datos_pedido['Fecha']}")
-    p.drawString(50, h - 130, f"Rango Horario: {datos_pedido['Horario']}")
+        if not all([host, port, user, password, sender]):
+            return False, "SMTP no configurado en st.secrets."
 
-    y = h - 170
-    p.setFont("Helvetica-Bold", 11)
-    p.drawString(50, y, "Descripción")
-    p.drawString(250, y, "Cant.")
-    p.drawString(320, y, "Kg.")
-    p.drawString(400, y, "Tipo")
-    p.line(50, y - 5, 550, y - 5)
-    
-    y -= 20
-    p.setFont("Helvetica", 10)
-    for item in datos_pedido['Detalle']:
-        p.drawString(50, y, str(item['Descripción']))
-        p.drawString(250, y, str(item['Cant.']))
-        p.drawString(320, y, str(item['Kg.']))
-        p.drawString(400, y, str(item['Tipo']))
-        y -= 15
-        if y < 50:
-            p.showPage()
-            y = h - 50
+        msg = EmailMessage()
+        msg["Subject"] = asunto
+        msg["From"] = sender
+        msg["To"] = destinatario
+        msg.set_content(cuerpo_txt)
 
-    p.showPage()
-    p.save()
-    buffer.seek(0)
-    return buffer
+        # Adjuntar PDF
+        msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=nombre_pdf)
 
-# --- 3. ESTADO DE SESIÓN ---
-if 'nav' not in st.session_state: st.session_state.nav = "Inicio"
-if 'rol' not in st.session_state: st.session_state.rol = "Cliente"
-if 'lista_temporal' not in st.session_state: st.session_state.lista_temporal = []
-if 'productos_wc' not in st.session_state:
-    st.session_state.productos_wc = ["Acelga", "Anco", "Banana", "Cebolla", "Huevos", "Papa", "Tomate"]
+        with smtplib.SMTP(host, port) as server:
+            server.starttls()
+            server.login(user, password)
+            server.send_message(msg)
 
-# --- 4. NAVEGACIÓN ---
-st.title("🍎 FRUTAS WC
+        return True, "Email enviado."
+    except Exception as e:
+        return False, f"Fallo al enviar email: {e}"
