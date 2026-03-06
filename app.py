@@ -36,31 +36,36 @@ def generar_pdf(datos_pedido):
     p = canvas.Canvas(buffer, pagesize=A4)
     w, h = A4
 
+    # Encabezado
     p.setFont("Helvetica-Bold", 16)
     p.drawString(50, h - 50, "FRUTAS WC - NOTA DE PEDIDO")
     p.setFont("Helvetica", 10)
     p.drawString(50, h - 65, "Contacto: 351 6351605 | Correo: frutasyverduraswc@gmail.com")
     p.line(50, h - 70, 550, h - 70)
 
+    # Info Cliente
     p.setFont("Helvetica-Bold", 12)
     p.drawString(50, h - 100, f"Cliente: {datos_pedido['Cliente']}")
     p.setFont("Helvetica", 11)
     p.drawString(50, h - 115, f"Fecha de Entrega: {datos_pedido['Fecha']}")
     p.drawString(50, h - 130, f"Rango Horario: {datos_pedido['Horario']}")
 
+    # Tabla
     y = h - 170
     p.setFont("Helvetica-Bold", 11)
     p.drawString(50, y, "Descripción")
-    p.drawString(350, y, "Cant. (Bultos)")
-    p.drawString(450, y, "Kg.")
+    p.drawString(250, y, "Cant.")
+    p.drawString(320, y, "Kg.")
+    p.drawString(400, y, "Tipo")
     p.line(50, y - 5, 550, y - 5)
     
     y -= 20
     p.setFont("Helvetica", 10)
     for item in datos_pedido['Detalle']:
         p.drawString(50, y, str(item['Descripción']))
-        p.drawString(350, y, str(item['Cant.']))
-        p.drawString(450, y, str(item['Kg.']))
+        p.drawString(250, y, str(item['Cant.']))
+        p.drawString(320, y, str(item['Kg.']))
+        p.drawString(400, y, str(item['Tipo']))
         y -= 15
         if y < 50:
             p.showPage()
@@ -101,7 +106,8 @@ if st.session_state.nav == "Crear Pedido":
     with col_h2: h_hasta = st.time_input("Hasta", value=datetime.strptime("14:00", "%H:%M"))
 
     st.write("---")
-    # SELECCIÓN DE PRODUCTOS
+    
+    # 1. SELECCIÓN DE CATÁLOGO
     st.subheader("1. Seleccioná de la lista")
     col_p, col_c, col_k, col_b = st.columns([3, 1, 1, 1])
     with col_p: item_sel = st.selectbox("Buscar producto...", st.session_state.productos_wc)
@@ -111,34 +117,46 @@ if st.session_state.nav == "Crear Pedido":
         st.write(" ")
         if st.button("➕ Agregar"):
             if cant_sel > 0 or kg_sel > 0:
-                st.session_state.lista_temporal.append({"Descripción": item_sel, "Cant.": cant_sel, "Kg.": kg_sel})
+                st.session_state.lista_temporal.append({
+                    "Descripción": item_sel, 
+                    "Cant.": cant_sel, 
+                    "Kg.": kg_sel,
+                    "Tipo": "Catálogo"
+                })
                 st.rerun()
 
-    # PEDIDO ACTUAL (JUSTO DEBAJO)
+    # 2. TABLA DE PEDIDO ACTUAL
     if st.session_state.lista_temporal:
-        st.write("### 📋 Pedido Actual")
+        st.write("### 📋 Tu Pedido hasta ahora")
         st.dataframe(pd.DataFrame(st.session_state.lista_temporal), hide_index=True, use_container_width=True)
         if st.button("🗑️ Borrar último ítem"):
             st.session_state.lista_temporal.pop()
             st.rerun()
         st.write("---")
 
-    # AGREGAR OTRO (AL FINAL)
+    # 3. SECCIÓN ESPECIALES
     with st.expander("➕ Agregar producto que NO está en la lista"):
+        st.info("Usá esta sección solo si el producto no figura en el buscador de arriba.")
         col_n1, col_n2, col_n3, col_n4 = st.columns([3, 1, 1, 1])
-        with col_n1: o_nom = st.text_input("Nombre del producto")
+        with col_n1: o_nom = st.text_input("Nombre del producto especial")
         with col_n2: o_can = st.number_input("Bultos", min_value=0, step=1, key="o_c")
         with col_n3: o_kg = st.number_input("Kg.", min_value=0.0, step=0.5, key="o_k")
         with col_n4:
             st.write(" ")
-            if st.button("✔ Añadir Especial"):
+            if st.button("✔ Añadir como ESPECIAL"):
                 if o_nom:
-                    st.session_state.lista_temporal.append({"Descripción": o_nom.upper(), "Cant.": o_can, "Kg.": o_kg})
+                    st.session_state.lista_temporal.append({
+                        "Descripción": o_nom.upper(), 
+                        "Cant.": o_can, 
+                        "Kg.": o_kg,
+                        "Tipo": "ESPECIAL"
+                    })
                     st.rerun()
 
-    # BOTÓN DE CONFIRMACIÓN
+    # 4. BOTÓN FINAL
     if st.session_state.lista_temporal:
-        if st.button("🚀 CONFIRMAR Y GENERAR PDF", use_container_width=True):
+        st.write("---")
+        if st.button("🚀 FINALIZAR Y DESCARGAR PDF", use_container_width=True):
             if nombre_c:
                 resumen = {
                     "Cliente": nombre_c, "Fecha": fecha_e.strftime("%d/%m/%Y"),
@@ -146,15 +164,15 @@ if st.session_state.nav == "Crear Pedido":
                     "Detalle": st.session_state.lista_temporal
                 }
                 pdf_file = generar_pdf(resumen)
-                st.success(f"¡Pedido confirmado para {nombre_c}!")
+                st.success(f"¡Pedido confirmado!")
                 st.download_button(
-                    label="📥 Descargar Nota de Pedido (PDF)",
+                    label="📥 Click aquí para Descargar Nota de Pedido",
                     data=pdf_file,
                     file_name=f"Pedido_{nombre_c}.pdf",
                     mime="application/pdf"
                 )
             else:
-                st.error("Por favor, ingresá el nombre del cliente arriba.")
+                st.error("Por favor, escribí el nombre del cliente arriba.")
 
 # --- LOGIN ADMIN ---
 st.write("---")
@@ -168,4 +186,5 @@ if st.session_state.rol == "Cliente":
                 st.rerun()
 
 wa_link = "https://wa.me/543516422893?text=Consultas%20FRUTAS%20WC"
+st.markdown(f'<a href="{wa_link}" class="wa-float" target="_blank">💬 WhatsApp</a>', unsafe_allow_html=True)
 st.markdown(f'<a href="{wa_link}" class="wa-float" target="_blank">💬 WhatsApp</a>', unsafe_allow_html=True)
