@@ -1,18 +1,7 @@
 # -*- coding: utf-8 -*-
-# FRUTAS WC - App de pedidos con PDF + estados + envío por email (optimizada)
-# ---------------------------------------------------------------------------
-# Configurar SMTP en .streamlit/secrets.toml:
-# SMTP_HOST="smtp.gmail.com"
-# SMTP_PORT=587
-# SMTP_USER="tucuenta@gmail.com"
-# SMTP_PASS="APP_PASSWORD_DE_GMAIL"
-# SMTP_FROM="FRUTAS WC <tucuenta@gmail.com>"
-# ADMIN_USER="Luciana"
-# ADMIN_PASS="WC2026"
-
 import streamlit as st
 import pandas as pd
-import re, uuid, smtplib
+import uuid, smtplib
 from email.message import EmailMessage
 from datetime import datetime, timedelta, time
 from io import BytesIO
@@ -23,605 +12,247 @@ from reportlab.lib import colors
 from reportlab.lib.units import mm
 
 # =========================
-# 0) CONFIG INICIAL & CSS
+# 0) CONFIGURACIÓN Y ESTILO
 # =========================
 st.set_page_config(page_title="FRUTAS WC", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
 [data-testid="stSidebar"] {display: none;}
-.stApp { background-size: cover; background-position: center bottom; background-attachment: fixed; }
-.main .block-container { background-color: rgba(255, 255, 255, 0.96); border-radius: 15px; padding: 30px; max-width: 980px; }
-.wa-float { position: fixed; bottom: 20px; right: 20px; background-color: #25d366; color: white; border-radius: 50px;
-            padding: 12px 20px; display: flex; align-items: center; gap: 10px; text-decoration: none; z-index: 100; font-weight: bold; }
-.stButton>button { border-radius: 8px; }
+.stApp { 
+    background-image: url("app/static/fondo.jpg"); 
+    background-size: cover; 
+    background-position: center bottom; 
+    background-attachment: fixed; 
+}
+.main .block-container { 
+    background-color: rgba(255, 255, 255, 0.96); 
+    border-radius: 15px; padding: 30px; max-width: 980px; 
+    box-shadow: 0px 4px 15px rgba(0,0,0,0.1);
+}
+.wa-float { 
+    position: fixed; bottom: 20px; right: 20px; background-color: #25d366; 
+    color: white; border-radius: 50px; padding: 12px 20px; 
+    display: flex; align-items: center; gap: 10px; text-decoration: none; 
+    z-index: 100; font-weight: bold; box-shadow: 2px 2px 10px rgba(0,0,0,0.2);
+}
 </style>
 """, unsafe_allow_html=True)
 
 # =========================
-# 1) STATE & HELPERS
+# 1) ESTADO DE SESIÓN
 # =========================
-def init_state():
-    if "nav" not in st.session_state: st.session_state.nav = "Inicio"
-    if "rol" not in st.session_state: st.session_state.rol = "Cliente"
-    if "lista" not in st.session_state: st.session_state.lista = []          # items del pedido actual
-    if "lista_hash" not in st.session_state: st.session_state.lista_hash = ""# para evitar trabajo repetido
-    if "ultimo_pedido" not in st.session_state: st.session_state.ultimo_pedido = None
-    if "pedidos" not in st.session_state: st.session_state.pedidos = {}      # id -> pedido
+if "nav" not in st.session_state: st.session_state.nav = "Inicio"
+if "rol" not in st.session_state: st.session_state.rol = "Cliente"
+if "lista" not in st.session_state: st.session_state.lista = []
+if "pedidos" not in st.session_state: st.session_state.pedidos = {}
+if "ultimo_pedido" not in st.session_state: st.session_state.ultimo_pedido = None
 
-    # Catálogo en el orden de tu plantilla (dos columnas fijas del PDF)
-    if "catalogo_left" not in st.session_state:
-        st.session_state.catalogo_left = [
-            "Acelga","Achicoria","Ajo","Alcaucil","Ananá","Apio","Arándanos","Banana","Batata","Berenjena",
-            "Brócoli","Calabacín","Calabaza","Cebolla","Cerezas","Champiñón","Chaucha","Choclo","Ciruela","Coliflor",
-            "Durazno","Espárragos","Espinaca","Frutilla","Kiwi","Lechuga","Lechuguin","Limón","Mandarina","Manzana",
-            "Manzana (V)","Melón"
-        ]
-    if "catalogo_right" not in st.session_state:
-        st.session_state.catalogo_right = [
-            "Naranja","Naranja (O)","Palta","Papa","Papa (Bolsa)","Pepino","Pera","Pimiento","Pomelo","Puerro",
-            "Remolacha","Repollo","Rúcula","Sandia","Tomate (Cherry)","Tomate (P)","Tomate (R)","Uva","Verdeo","Zanahoria",
-            "Zapallito","Zapallo","Zapallo (N)","Zuchini","Oliva","Miel","Huevos","Carbón","Perejil","Bandejas"
-        ]
-    if "productos_todos" not in st.session_state:
-        st.session_state.productos_todos = st.session_state.catalogo_left + st.session_state.catalogo_right
-
-def normalizar_texto(s: str) -> str:
-    return (s or "").strip().upper()
-
-def new_order_id() -> str:
-    return uuid.uuid4().hex[:8].upper()
-
-EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-def es_email_valido(email: str) -> bool:
-    if not email: return False
-    return bool(EMAIL_REGEX.match(email.strip()))
-
-def agregar_item(descripcion: str, cant: float, kg: float, tipo: str):
-    """Agrega o acumula un item por Descripción+Tipo."""
-    if not descripcion: return
-    if (cant or 0) <= 0 and (kg or 0.0) <= 0: return
-    descripcion = normalizar_texto(descripcion)
-    tipo = normalizar_texto(tipo)
-    for row in st.session_state.lista:
-        if row["Descripción"] == descripcion and row["Tipo"] == tipo:
-            row["Cant."] = int(row.get("Cant.", 0)) + int(cant or 0)
-            row["Kg."] = float(row.get("Kg.", 0.0)) + float(kg or 0.0)
-            return
-    st.session_state.lista.append({
-        "Descripción": descripcion,
-        "Cant.": int(cant or 0),
-        "Kg.": float(kg or 0.0),
-        "Tipo": tipo
-    })
-
-def totals(df: pd.DataFrame):
-    if df.empty: return 0, 0.0
-    return int(pd.to_numeric(df["Cant."], errors="coerce").fillna(0).sum()), \
-           float(pd.to_numeric(df["Kg."], errors="coerce").fillna(0.0).sum())
-
-def enviar_email_pdf(destinatario: str, asunto: str, cuerpo_txt: str, nombre_pdf: str, pdf_bytes: bytes) -> tuple[bool, str]:
-    """
-    Envía email con PDF adjunto usando SMTP definido en st.secrets.
-    Evita bloqueos:
-      - Valida secrets
-      - Usa timeout=10s en la conexión
-    """
-    try:
-        host = st.secrets.get("SMTP_HOST", "")
-        port = int(st.secrets.get("SMTP_PORT", 587))
-        user = st.secrets.get("SMTP_USER", "")
-        password = st.secrets.get("SMTP_PASS", "")
-        sender = st.secrets.get("SMTP_FROM", user)
-
-        if not all([host, port, user, password, sender]):
-            return False, "SMTP no configurado en st.secrets."
-
-        msg = EmailMessage()
-        msg["Subject"] = asunto
-        msg["From"] = sender
-        msg["To"] = destinatario
-        msg.set_content(cuerpo_txt)
-        msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=nombre_pdf)
-
-        # Timeout corto para evitar “pensando…”
-        with smtplib.SMTP(host, port, timeout=10) as server:
-            server.ehlo()
-            # STARTTLS si corresponde
-            try:
-                server.starttls()
-                server.ehlo()
-            except Exception:
-                # Si el servidor no requiere/soporta TLS, seguimos sin romper
-                pass
-            server.login(user, password)
-            server.send_message(msg)
-
-        return True, "Email enviado."
-    except Exception as e:
-        return False, f"Fallo al enviar email: {e}"
-
-# =========================
-# 2) PDF NOTA DE PEDIDO (plantilla de Excel)
-# =========================
-PRODUCTOS_COL_IZQ = [
+PRODUCTOS_IZQ = [
     "Acelga","Achicoria","Ajo","Alcaucil","Ananá","Apio","Arándanos","Banana","Batata","Berenjena",
     "Brócoli","Calabacín","Calabaza","Cebolla","Cerezas","Champiñón","Chaucha","Choclo","Ciruela","Coliflor",
     "Durazno","Espárragos","Espinaca","Frutilla","Kiwi","Lechuga","Lechuguin","Limón","Mandarina","Manzana",
     "Manzana (V)","Melón"
 ]
-PRODUCTOS_COL_DER = [
+PRODUCTOS_DER = [
     "Naranja","Naranja (O)","Palta","Papa","Papa (Bolsa)","Pepino","Pera","Pimiento","Pomelo","Puerro",
     "Remolacha","Repollo","Rúcula","Sandia","Tomate (Cherry)","Tomate (P)","Tomate (R)","Uva","Verdeo","Zanahoria",
     "Zapallito","Zapallo","Zapallo (N)","Zuchini","Oliva","Miel","Huevos","Carbón","Perejil","Bandejas"
 ]
+TODOS = sorted(PRODUCTOS_IZQ + PRODUCTOS_DER)
 
-def _fmt_num(n, dec=2):
-    try:
-        v = float(n)
-    except Exception:
-        return ""
-    return f"{v:.{dec}f}"
+# =========================
+# 2) FUNCIONES CORE
+# =========================
+def agregar_item(desc, cant, kg, tipo):
+    desc = str(desc).strip().upper()
+    for row in st.session_state.lista:
+        if row["Descripción"] == desc:
+            row["Cant."] += cant
+            row["Kg."] += kg
+            return
+    st.session_state.lista.append({"Descripción": desc, "Cant.": cant, "Kg.": kg, "Tipo": tipo})
 
-def generar_pdf_wc(datos_pedido):
-    """
-    datos_pedido:
-      {
-        "Cliente": str,
-        "Domicilio": str,
-        "Fecha": "dd/mm/YYYY",
-        "Detalle": [ {"Descripción": str, "Cant.": int|float, "Kg.": float, "Importe": float (opcional)} ]
-      }
-    """
+def generar_pdf_wc(datos):
     buf = BytesIO()
     p = canvas.Canvas(buf, pagesize=A4)
     w, h = A4
+    mx, my = 15*mm, 15*mm
 
-    margin_x = 15 * mm
-    margin_y = 12 * mm
-
-    # Encabezado
+    # Header
     p.setFont("Helvetica-Bold", 16)
-    p.drawString(margin_x, h - margin_y - 10, "FRUTAS Y VERDURAS WC")
-    p.setFont("Helvetica-Bold", 13)
-    p.drawString(margin_x, h - margin_y - 28, "NOTA DE PEDIDO")
-
+    p.drawString(mx, h-my, "FRUTAS Y VERDURAS WC")
     p.setFont("Helvetica", 10)
-    p.drawString(margin_x, h - margin_y - 44, "Contacto: 351 6351605")
-    p.drawString(margin_x + 150, h - margin_y - 44, "Correo: frutasyverduraswc@gmail.com")
+    p.drawString(mx, h-my-15, "Contacto: 351 6351605 | Correo: frutasyverduraswc@gmail.com")
+    p.line(mx, h-my-20, w-mx, h-my-20)
 
-    # Fecha DIA/MES/AÑO
-    try:
-        dd, mm_, yy = datos_pedido.get("Fecha","").split("/")
-    except Exception:
-        dd = mm_ = yy = ""
-    y_top = h - margin_y - 62
-    p.setFont("Helvetica", 10)
-    p.drawString(margin_x, y_top, "DIA")
-    p.drawString(margin_x + 60, y_top, "MES")
-    p.drawString(margin_x + 120, y_top, "AÑO")
-
-    def draw_boxed_text(x, y, txt, w_box=40, h_box=12):
-        p.rect(x, y - h_box + 2, w_box, h_box, stroke=1, fill=0)
-        p.drawCentredString(x + w_box/2, y - h_box + 4, str(txt))
-
-    draw_boxed_text(margin_x, y_top - 2, dd)
-    draw_boxed_text(margin_x + 60, y_top - 2, mm_)
-    draw_boxed_text(margin_x + 120, y_top - 2, yy)
-
-    # Cliente y Domicilio
-    y_info = y_top - 26
-    p.setFont("Helvetica-Bold", 11)
-    p.drawString(margin_x, y_info, f"Cliente:  {datos_pedido.get('Cliente','')}")
-    y_info -= 16
-    p.setFont("Helvetica", 10)
-    p.drawString(margin_x, y_info, f"Domicilio:  {datos_pedido.get('Domicilio','')}")
-
-    # Tabla doble
-    y_tbl_top = y_info - 18
-    col_gap = 10 * mm
-    col_width = (w - 2*margin_x - col_gap) / 2
-    left_x = margin_x
-    right_x = margin_x + col_width + col_gap
-
-    desc_w = col_width * 0.55
-    cant_w = col_width * 0.12
-    kg_w   = col_width * 0.13
-    imp_w  = col_width * 0.20
-    row_h  = 12
-
-    def draw_table_header(x0, y0):
-        p.setFont("Helvetica-Bold", 10)
-        p.drawString(x0 + 2, y0, "Descripción")
-        p.drawRightString(x0 + desc_w + cant_w - 2, y0, "Cant.")
-        p.drawRightString(x0 + desc_w + cant_w + kg_w - 2, y0, "Kg.")
-        p.drawRightString(x0 + desc_w + cant_w + kg_w + imp_w - 2, y0, "Importe")
-        p.setStrokeColor(colors.black)
-        p.line(x0, y0 - 3, x0 + col_width, y0 - 3)
-
-    # Mapa de items
-    idx = {}
-    for it in datos_pedido.get("Detalle", []):
-        desc = str(it.get("Descripción","")).strip().upper()
-        if not desc:
-            continue
-        idx[desc] = {
-            "cant": it.get("Cant.", ""),
-            "kg": it.get("Kg.", ""),
-            "imp": it.get("Importe", None)
-        }
-
-    def draw_row(x0, y, nombre):
-        p.setFont("Helvetica", 10)
-        p.drawString(x0 + 2, y, nombre)
-        k = idx.get(nombre.upper(), None)
-        if k and k["cant"] not in (None, "", 0, 0.0):
-            try:
-                p.drawRightString(x0 + desc_w + cant_w - 2, y, str(int(float(k["cant"]))))
-            except Exception:
-                pass
-        if k and k["kg"] not in (None, "", 0, 0.0):
-            try:
-                p.drawRightString(x0 + desc_w + cant_w + kg_w - 2, y, _fmt_num(k["kg"]))
-            except Exception:
-                pass
-        if k and k["imp"] not in (None, "", 0, 0.0):
-            try:
-                p.drawRightString(x0 + desc_w + cant_w + kg_w + imp_w - 2, y, _fmt_num(k["imp"], 2))
-            except Exception:
-                pass
-
-    # Bloque izquierdo
-    y_cursor_left = y_tbl_top
-    draw_table_header(left_x, y_cursor_left)
-    y_cursor_left -= row_h
-    for nombre in PRODUCTOS_COL_IZQ:
-        draw_row(left_x, y_cursor_left + 2, nombre)
-        y_cursor_left -= row_h
-
-    # Bloque derecho
-    y_cursor_right = y_tbl_top
-    draw_table_header(right_x, y_cursor_right)
-    y_cursor_right -= row_h
-    for nombre in PRODUCTOS_COL_DER:
-        draw_row(right_x, y_cursor_right + 2, nombre)
-        y_cursor_right -= row_h
-
-    # Totales y leyenda
-    total_importe = 0.0
-    hay_importes = False
-    for v in idx.values():
-        try:
-            if v["imp"] not in (None, "", 0, 0.0):
-                total_importe += float(v["imp"])
-                hay_importes = True
-        except Exception:
-            pass
-
-    vacios = 0
-    for nombre in (PRODUCTOS_COL_IZQ + PRODUCTOS_COL_DER):
-        k = idx.get(nombre.upper(), None)
-        if not k or (not k["cant"] and not k["kg"]):
-            vacios += 1
-
-    y_total_line = min(y_cursor_left, y_cursor_right) - 6
-    p.setStrokeColor(colors.black)
-    p.line(margin_x, y_total_line, w - margin_x, y_total_line)
-
-    y_total = y_total_line - 14
+    # Info Pedido
     p.setFont("Helvetica-Bold", 12)
-    p.drawString(margin_x, y_total, "TOTAL")
-    if hay_importes:
-        p.drawRightString(w - margin_x, y_total, _fmt_num(total_importe, 2))
-
+    p.drawString(mx, h-my-40, f"Cliente: {datos['Cliente']}")
     p.setFont("Helvetica", 10)
-    p.drawString(margin_x, y_total - 16, f"Vacíos: {vacios}")
+    p.drawString(mx, h-my-55, f"Fecha: {datos['Fecha']} | Horario: {datos['Horario']}")
+    p.drawString(mx, h-my-70, f"Domicilio: {datos['Domicilio']}")
 
-    p.setFont("Helvetica", 11)
-    p.drawRightString(w - margin_x, y_total - 16, "Gracias por tu compra.")
+    # Tabla de Pedido
+    y = h-my-100
+    p.setFont("Helvetica-Bold", 10)
+    p.drawString(mx, y, "Descripción")
+    p.drawString(mx+260, y, "Bultos")
+    p.drawString(mx+320, y, "Kg.")
+    p.drawString(mx+400, y, "Tipo")
+    p.line(mx, y-5, w-mx, y-5)
+
+    y -= 20
+    p.setFont("Helvetica", 10)
+    for it in datos['Detalle']:
+        p.drawString(mx, y, it['Descripción'])
+        p.drawString(mx+260, y, str(it['Cant.']))
+        p.drawString(mx+320, y, str(it['Kg.']))
+        p.drawString(mx+400, y, it['Tipo'])
+        y -= 15
+        if y < 40*mm: p.showPage(); y = h-my # Salto de página simple
 
     p.showPage()
     p.save()
     buf.seek(0)
     return buf
 
-# =========================
-# 3) UI - Navegación
-# =========================
-init_state()
-st.title("🍎 FRUTAS WC")
+def enviar_email(dest, asunto, cuerpo, pdf_nombre, pdf_bytes):
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = asunto
+        msg["From"] = st.secrets["SMTP_FROM"]
+        msg["To"] = dest
+        msg.set_content(cuerpo)
+        msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=pdf_nombre)
+        with smtplib.SMTP(st.secrets["SMTP_HOST"], st.secrets["SMTP_PORT"], timeout=10) as s:
+            s.starttls()
+            s.login(st.secrets["SMTP_USER"], st.secrets["SMTP_PASS"])
+            s.send_message(msg)
+        return True, "Enviado"
+    except Exception as e: return False, str(e)
 
-c1, c2, c3, c4 = st.columns(4)
-if st.session_state.rol == "Cliente":
-    if c1.button("🏠 Inicio", use_container_width=True): st.session_state.nav = "Inicio"
-    if c2.button("📖 Nosotros", use_container_width=True): st.session_state.nav = "Nosotros"
-    if c3.button("🛒 Crear Pedido", use_container_width=True): st.session_state.nav = "Crear Pedido"
-    if c4.button("🔎 Mi Pedido", use_container_width=True): st.session_state.nav = "Estado"
+# =========================
+# 3) INTERFAZ DE USUARIO
+# =========================
+st.title("🍎 FRUTAS WC")
+c_nav = st.columns(4)
+if c_nav[0].button("🏠 Inicio", use_container_width=True): st.session_state.nav = "Inicio"
+if c_nav[1].button("📖 Nosotros", use_container_width=True): st.session_state.nav = "Nosotros"
+if c_nav[2].button("🛒 Crear Pedido", use_container_width=True): st.session_state.nav = "Crear Pedido"
+if c_nav[3].button("🔎 Mi Pedido", use_container_width=True): st.session_state.nav = "Estado"
 
 st.divider()
 
-# =========================
-# 4) CREAR PEDIDO
-# =========================
 if st.session_state.nav == "Crear Pedido":
     st.header("🛒 Armá tu Pedido")
+    
+    # Datos de contacto
+    with st.container():
+        cli = st.text_input("Nombre del Cliente / Negocio")
+        dom = st.text_input("Domicilio de Entrega")
+        mail = st.text_input("Email para el PDF")
+        
+        c_t1, c_t2, c_t3 = st.columns([2,1,1])
+        fec = c_t1.date_input("Fecha de entrega", min_value=datetime.now().date() + timedelta(days=1))
+        h1 = c_t2.time_input("Desde", value=time(8,0))
+        h2 = c_t3.time_input("Hasta", value=time(14,0))
 
-    with st.form("form_pedido", clear_on_submit=False):
-        nombre_c = st.text_input("Nombre del Cliente / Negocio").strip()
-        domicilio = st.text_input("Domicilio (dirección de entrega)").strip()
-        email_cli = st.text_input("Correo electrónico para notificaciones y PDF").strip()
+    st.write("---")
 
-        col_f, col_h1, col_h2 = st.columns([2, 1, 1])
-        with col_f:
-            fecha_e = st.date_input("Fecha de Entrega", min_value=datetime.now().date() + timedelta(days=1))
-        with col_h1:
-            h_desde = st.time_input("Desde", value=time(8, 0))
-        with col_h2:
-            h_hasta = st.time_input("Hasta", value=time(14, 0))
+    # 1. Selección de Catálogo
+    st.subheader("1. Seleccioná del catálogo")
+    cp, cc, ck, cb = st.columns([3, 1, 1, 1])
+    item = cp.selectbox("Producto", TODOS)
+    cant = cc.number_input("Bultos", min_value=0, step=1, key="c_cat")
+    kg = ck.number_input("Kg.", min_value=0.0, step=0.5, key="k_cat")
+    if cb.button("➕ Agregar", use_container_width=True):
+        if cant > 0 or kg > 0:
+            agregar_item(item, cant, kg, "CATÁLOGO")
+            st.rerun()
 
-        st.write("---")
-        st.subheader("1. Seleccioná de la lista")
-        col_p, col_c, col_k, col_b = st.columns([3, 1, 1, 1])
-        with col_p:
-            item_sel = st.selectbox("Producto", st.session_state.productos_todos, index=0, key="prod_sel")
-        with col_c:
-            cant_sel = st.number_input("Bultos", min_value=0, step=1, key="cant_sel")
-        with col_k:
-            kg_sel = st.number_input("Kg.", min_value=0.0, step=0.5, key="kg_sel")
-        with col_b:
-            st.write(" ")
-            add_main = st.form_submit_button("➕ Agregar", use_container_width=True)
-
-        if add_main:
-            if cant_sel <= 0 and kg_sel <= 0:
-                st.warning("Indicá Bultos y/o Kg para agregar.")
-            else:
-                agregar_item(item_sel, cant_sel, kg_sel, "Catálogo")
-
-        with st.expander("➕ Agregar producto que NO está en la lista"):
-            st.info("Usá esta sección solo si el producto no figura en el buscador de arriba.")
-            col_n1, col_n2, col_n3, col_n4 = st.columns([3, 1, 1, 1])
-            with col_n1:
-                o_nom = st.text_input("Nombre del producto especial", key="o_nom")
-            with col_n2:
-                o_can = st.number_input("Bultos", min_value=0, step=1, key="o_can")
-            with col_n3:
-                o_kg = st.number_input("Kg.", min_value=0.0, step=0.5, key="o_kg")
-            with col_n4:
-                st.write(" ")
-                add_esp = st.form_submit_button("✔ Añadir como ESPECIAL", use_container_width=True)
-
-            if add_esp:
-                if not o_nom.strip():
-                    st.warning("Escribí el nombre del producto especial.")
-                elif o_can <= 0 and o_kg <= 0:
-                    st.warning("Indicá Bultos y/o Kg para el producto especial.")
-                else:
-                    agregar_item(o_nom, o_can, o_kg, "ESPECIAL")
-
-        submitted_final = st.form_submit_button("🚀 FINALIZAR Y GENERAR PDF", use_container_width=True)
-
-    # --- Tabla editable y totales (solo si hay items)
+    # 2. Tu Pedido Actual (Justo debajo de la selección)
     if st.session_state.lista:
-        # Hash simple para no recalcular si no cambió
-        lista_hash_new = str(st.session_state.lista)
-        recalc = (lista_hash_new != st.session_state.lista_hash)
+        st.write("### 📋 Tu Pedido Actual")
+        df = pd.DataFrame(st.session_state.lista)
+        st.dataframe(df, hide_index=True, use_container_width=True)
+        if st.button("🗑️ Vaciar Lista"):
+            st.session_state.lista = []
+            st.rerun()
+        st.write("---")
 
-        if recalc:
-            df = pd.DataFrame(st.session_state.lista)
-            if "Eliminar" not in df.columns:
-                df["Eliminar"] = False
-
-            edited_df = st.data_editor(
-                df,
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Descripción": st.column_config.TextColumn("Descripción", width="large"),
-                    "Cant.": st.column_config.NumberColumn("Bultos", min_value=0, step=1),
-                    "Kg.": st.column_config.NumberColumn("Kg.", min_value=0.0, step=0.5, format="%.2f"),
-                    "Tipo": st.column_config.TextColumn("Tipo"),
-                    "Eliminar": st.column_config.CheckboxColumn("Eliminar")
-                }
-            )
-
-            cleaned = []
-            for _, r in edited_df.iterrows():
-                if bool(r.get("Eliminar", False)):  # evitar KeyError
-                    continue
-                # coerción segura
-                try: c = int(r.get("Cant.", 0) or 0)
-                except: c = 0
-                try: k = float(r.get("Kg.", 0.0) or 0.0)
-                except: k = 0.0
-                d = normalizar_texto(str(r.get("Descripción", "") or ""))
-                t = normalizar_texto(str(r.get("Tipo", "") or ""))
-                if not d:  # si quedó sin descripción, ignorar
-                    continue
-                if c == 0 and k == 0:
-                    continue
-                cleaned.append({"Descripción": d, "Cant.": c, "Kg.": round(k, 2), "Tipo": t})
-
-            st.session_state.lista = cleaned
-            st.session_state.lista_hash = str(cleaned)
-            df_now = pd.DataFrame(cleaned)
-        else:
-            df_now = pd.DataFrame(st.session_state.lista)
-
-        st.write("### 📋 Tu Pedido hasta ahora")
-        st.dataframe(df_now, hide_index=True, use_container_width=True)
-
-        c_tot, k_tot = totals(df_now)
-        st.info(f"**Totales:** Bultos = {c_tot}  |  Kg = {k_tot:.2f}")
-
-        if st.button("🗑️ Borrar último ítem", use_container_width=True):
-            if st.session_state.lista:
-                st.session_state.lista.pop()
-                st.session_state.lista_hash = str(st.session_state.lista)
+    # 3. Producto Especial (Al final)
+    with st.expander("➕ Agregar producto que NO está en la lista"):
+        ce1, ce2, ce3, ce4 = st.columns([3, 1, 1, 1])
+        e_nom = ce1.text_input("Nombre producto especial")
+        e_can = ce2.number_input("Bultos", min_value=0, step=1, key="c_esp")
+        e_kg = ce3.number_input("Kg.", min_value=0.0, step=0.5, key="k_esp")
+        if ce4.button("✔ Añadir Especial"):
+            if e_nom:
+                agregar_item(e_nom, e_can, e_kg, "ESPECIAL")
                 st.rerun()
-    else:
-        df_now = pd.DataFrame(columns=["Descripción", "Cant.", "Kg.", "Tipo"])
 
-    # --- Finalizar
-    if submitted_final:
-        errores = []
-        if not nombre_c: errores.append("• Completá el **Nombre**.")
-        if not domicilio: errores.append("• Completá el **Domicilio**.")
-        if not es_email_valido(email_cli): errores.append("• Ingresá un **correo electrónico válido**.")
-        if not st.session_state.lista: errores.append("• Agregá al menos **un** producto.")
-        if h_desde >= h_hasta: errores.append("• Revisá el **rango horario**.")
+    # 4. Botón Confirmar
+    if st.session_state.lista:
+        if st.button("🚀 CONFIRMAR PEDIDO Y GENERAR PDF", use_container_width=True):
+            if cli and mail and dom:
+                datos = {
+                    "Cliente": cli.upper(), "Domicilio": dom,
+                    "Fecha": fec.strftime("%d/%m/%Y"),
+                    "Horario": f"{h1.strftime('%H:%M')} a {h2.strftime('%H:%M')}",
+                    "Detalle": st.session_state.lista
+                }
+                pdf_io = generar_pdf_wc(datos)
+                pdf_bytes = pdf_io.getvalue()
+                oid = uuid.uuid4().hex[:6].upper()
+                
+                pedido = {"id": oid, "resumen": datos, "pdf_bytes": pdf_bytes, "estado": "Nuevo"}
+                st.session_state.pedidos[oid] = pedido
+                st.session_state.ultimo_pedido = pedido
+                
+                st.success(f"¡Pedido confirmado! ID: {oid}")
+                st.download_button("📥 Descargar mi PDF", data=pdf_bytes, file_name=f"Pedido_WC_{cli}.pdf", mime="application/pdf")
+            else:
+                st.error("Por favor completa Nombre, Domicilio y Email.")
 
-        if errores:
-            st.error("No se pudo finalizar el pedido:\n\n" + "\n".join(errores))
-        else:
-            resumen = {
-                "Cliente": normalizar_texto(nombre_c),
-                "Domicilio": domicilio.strip(),
-                "Email": email_cli.strip(),
-                "Fecha": fecha_e.strftime("%d/%m/%Y"),
-                "Horario": f"{h_desde.strftime('%H:%M')} a {h_hasta.strftime('%H:%M')}",
-                "Detalle": st.session_state.lista
-            }
-
-            pdf_io = generar_pdf_wc(resumen)
-            pdf_bytes = pdf_io.read() if hasattr(pdf_io, "read") else pdf_io
-
-            order_id = new_order_id()
-            pedido = {
-                "id": order_id,
-                "estado": "Nuevo",  # Nuevo -> Preparación -> Distribución -> Entregado
-                "creado_ts": datetime.now().isoformat(timespec="seconds"),
-                "resumen": resumen,
-                "pdf_nombre": f"Pedido_{resumen['Cliente']}_{order_id}.pdf",
-                "pdf_bytes": pdf_bytes,
-            }
-            st.session_state.pedidos[order_id] = pedido
-            st.session_state.ultimo_pedido = pedido
-
-            st.success(f"¡Pedido confirmado! ID: {order_id}")
-            st.download_button(
-                label="📥 Descargar Nota de Pedido (PDF)",
-                data=pdf_bytes,
-                file_name=pedido["pdf_nombre"],
-                mime="application/pdf",
-                use_container_width=True
-            )
-
-# =========================
-# 5) Secciones extra
-# =========================
-if st.session_state.nav == "Inicio":
+# --- INICIO, NOSOTROS Y ESTADO ---
+elif st.session_state.nav == "Inicio":
     st.subheader("Bienvenida/o a FRUTAS WC")
-    st.write("Hacé tu pedido de manera simple, rápida y con confirmación en PDF.")
+    st.info("Hacé tu pedido online y recibí el PDF al instante.")
 
-if st.session_state.nav == "Nosotros":
-    st.subheader("Sobre nosotros")
-    st.write("Somos FRUTAS WC, abasteciendo Córdoba con productos frescos. Calidad, compromiso y entrega a tiempo.")
-
-if st.session_state.nav == "Estado":
-    st.subheader("Estado de tu pedido")
-    ped = st.session_state.get("ultimo_pedido")
-    if ped:
-        r = ped["resumen"]
-        st.write(f"**ID:** {ped['id']}  |  **Estado:** {ped['estado']}  |  **Creado:** {ped['creado_ts']}")
-        st.write(f"**Cliente:** {r['Cliente']}  |  **Entrega:** {r['Fecha']}  |  **Horario:** {r['Horario']}")
-        st.write(f"**Domicilio:** {r['Domicilio']}  |  **Email:** {r['Email']}")
-        st.dataframe(pd.DataFrame(r["Detalle"]), hide_index=True, use_container_width=True)
-        st.download_button("📥 Re-descargar PDF", data=ped["pdf_bytes"], file_name=ped["pdf_nombre"], mime="application/pdf")
-    else:
-        st.info("Todavía no registraste un pedido en esta sesión.")
+elif st.session_state.nav == "Estado":
+    st.subheader("🔎 Mi Pedido")
+    p = st.session_state.ultimo_pedido
+    if p:
+        st.write(f"**ID:** {p['id']} | **Estado:** {p['estado']}")
+        st.dataframe(pd.DataFrame(p['resumen']['Detalle']), hide_index=True)
+        st.download_button("📥 Descargar PDF nuevamente", data=p['pdf_bytes'], file_name=f"Pedido_{p['id']}.pdf")
+    else: st.warning("No tienes pedidos activos.")
 
 # =========================
-# 6) Login Administración
+# 6) ADMIN
 # =========================
 st.write("---")
 if st.session_state.rol == "Cliente":
-    with st.expander("🔒 Acceso Administración"):
+    with st.expander("🔒 Admin"):
         u = st.text_input("Usuario")
         p = st.text_input("Contraseña", type="password")
-        if st.button("Entrar", use_container_width=True):
-            valid_user = st.secrets.get("ADMIN_USER", "Luciana")
-            valid_pass = st.secrets.get("ADMIN_PASS", "WC2026")
-            if u == valid_user and p == valid_pass:
-                st.session_state.rol = "Admin"
-                st.success("Acceso concedido.")
-                st.rerun()
-            else:
-                st.error("Usuario o contraseña incorrectos.")
-
-# =========================
-# 7) Panel Administración: estados + envío email (con timeout)
-# =========================
-if st.session_state.get("rol") == "Admin":
-    st.subheader("🛠 Administración de pedidos")
-    if not st.session_state.pedidos:
-        st.info("No hay pedidos en memoria.")
+        if st.button("Entrar"):
+            if u == st.secrets["ADMIN_USER"] and p == st.secrets["ADMIN_PASS"]:
+                st.session_state.rol = "Admin"; st.rerun()
+else:
+    st.subheader("🛠 Panel de Administración")
+    if not st.session_state.pedidos: st.info("No hay pedidos.")
     else:
-        opciones = [f"{pid} | {p['resumen']['Cliente']} | {p['estado']} | {p['resumen']['Fecha']}" 
-                    for pid, p in st.session_state.pedidos.items()]
-        sel = st.selectbox("Seleccioná un pedido", opciones)
-        pid_sel = sel.split(" | ")[0]
-        pedido = st.session_state.pedidos[pid_sel]
-        r = pedido["resumen"]
+        for pid, ped in st.session_state.pedidos.items():
+            with st.expander(f"Pedido {pid} - {ped['resumen']['Cliente']}"):
+                st.write(f"**Estado actual:** {ped['estado']}")
+                c_a1, c_a2 = st.columns(2)
+                if c_a1.button(f"Enviar Distribución {pid}"):
+                    ok, res = enviar_email(ped['resumen']['Email'], "Tu pedido WC está en camino", "Tu pedido está en distribución.", f"Pedido_{pid}.pdf", ped['pdf_bytes'])
+                    if ok: ped['estado'] = "Distribución"; st.success("Email enviado.")
+                    else: st.error(res)
+                if c_a2.button(f"Marcar Entregado {pid}"): ped['estado'] = "Entregado"; st.rerun()
 
-        st.write(f"**Cliente:** {r['Cliente']}  —  **Email:** {r['Email']}")
-        st.write(f"**Domicilio:** {r['Domicilio']}")
-        st.dataframe(pd.DataFrame(r["Detalle"]), hide_index=True, use_container_width=True)
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            if st.button("⏳ Preparación", use_container_width=True):
-                pedido["estado"] = "Preparación"
-                st.success("Estado cambiado a Preparación.")
-                with st.spinner("Enviando email…"):
-                    ok, msg = enviar_email_pdf(
-                        destinatario=r["Email"],
-                        asunto=f"Tu pedido #{pedido['id']} está en PREPARACIÓN - FRUTAS WC",
-                        cuerpo_txt=(
-                            f"Hola {r['Cliente']},\n\n"
-                            "¡Tu pedido ya está en PREPARACIÓN! Te adjuntamos la nota de pedido en PDF.\n"
-                            "Cuando salga a distribución, te avisamos nuevamente.\n\n"
-                            "Gracias por elegirnos.\nFRUTAS WC"
-                        ),
-                        nombre_pdf=pedido["pdf_nombre"],
-                        pdf_bytes=pedido["pdf_bytes"]
-                    )
-                st.info("Email: " + ("✔ enviado" if ok else f"✖ {msg}"))
-
-        with col2:
-            if st.button("🚚 Distribución", use_container_width=True):
-                pedido["estado"] = "Distribución"
-                st.success("Estado cambiado a Distribución.")
-                with st.spinner("Enviando email…"):
-                    ok, msg = enviar_email_pdf(
-                        destinatario=r["Email"],
-                        asunto=f"Tu pedido #{pedido['id']} está en DISTRIBUCIÓN - FRUTAS WC",
-                        cuerpo_txt=(
-                            f"Hola {r['Cliente']},\n\n"
-                            "¡Tu pedido ya está en DISTRIBUCIÓN! Te adjuntamos la nota de pedido en PDF.\n"
-                            "En breve lo recibirás en tu domicilio.\n\n"
-                            "Saludos,\nFRUTAS WC"
-                        ),
-                        nombre_pdf=pedido["pdf_nombre"],
-                        pdf_bytes=pedido["pdf_bytes"]
-                    )
-                st.info("Email: " + ("✔ enviado" if ok else f"✖ {msg}"))
-
-        with col3:
-            if st.button("✅ Entregado", use_container_width=True):
-                pedido["estado"] = "Entregado"
-                st.success("Estado cambiado a Entregado.")
-
-        with col4:
-            if st.button("↩ Volver a Nuevo", use_container_width=True):
-                pedido["estado"] = "Nuevo"
-                st.warning("Estado reiniciado a Nuevo.")
-
-# =========================
-# 8) WhatsApp flotante (fix HTML)
-# =========================
-import urllib.parse as up
-wa_msg_default = up.quote("Consultas FRUTAS WC")
-wa_link = f"https://wa.me/543516422893?text={wa_msg_default}"
-st.markdown(f'<a class="wa-float" href="{wa_link}" target="_blank">💬 WhatsApp</a>', unsafe_allow_html=True)
+# WhatsApp
+st.markdown(f'<a class="wa-float" href="https://wa.me/543516422893" target="_blank">💬 WhatsApp</a>', unsafe_allow_html=True)
