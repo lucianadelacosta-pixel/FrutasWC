@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 
-# --- 1. CONFIGURACIÓN VISUAL Y FONDO ---
+# --- 1. CONFIGURACIÓN VISUAL ---
 st.set_page_config(page_title="FRUTAS WC", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
@@ -18,7 +18,7 @@ st.markdown("""
         background-color: rgba(255, 255, 255, 0.96);
         border-radius: 15px;
         padding: 30px;
-        max-width: 1000px;
+        max-width: 900px;
     }
     html, body, [class*="css"] { font-family: "Arial", sans-serif; }
     .wa-float {
@@ -30,26 +30,20 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. BASE DE DATOS E INTERFAZ TIPO EXCEL ---
+# --- 2. BASE DE DATOS Y ESTADO ---
 if 'rol' not in st.session_state: st.session_state.rol = "Cliente"
 if 'nav' not in st.session_state: st.session_state.nav = "Inicio"
+if 'lista_temporal' not in st.session_state: st.session_state.lista_temporal = []
 
-# Carga inicial del catálogo basado en tu formato de NOTA DE PEDIDO
-if 'catalogo_wc' not in st.session_state:
-    data = {
-        "DETALLE": ["PAPA", "CEBOLLA", "ANCO", "CABUTIA", "ZANAHORIA", "TOMATE", "HUEVOS", "MANZANA", "BANANA", "CARBON"],
-        "MEDIDA": ["KG", "KG", "KG", "KG", "KG", "KG", "MAPLE", "KG", "KG", "BOLSA"],
-        "CANTIDAD": [0] * 10,
-        "PEDIDO_KG_UN": [0.0] * 10
-    }
-    st.session_state.catalogo_wc = pd.DataFrame(data)
-
-if 'pedidos_db' not in st.session_state:
-    st.session_state.pedidos_db = []
+# Lista completa basada en tu NOTA DE PEDIDO WC
+PRODUCTOS_WC = [
+    "PAPA", "CEBOLLA", "ANCO", "CABUTIA", "ZANAHORIA", "TOMATE", 
+    "HUEVOS", "MANZANA", "BANANA", "CARBON", "MORRON", "LECHUGA", 
+    "ACELGA", "BATATA", "PERA", "NARANJA", "LIMON", "ESPECIAS VARIAS"
+]
 
 # --- 3. NAVEGACIÓN ---
 st.title("🍎 FRUTAS WC")
-st.write("Distribución logística de frescuras en Córdoba")
 
 if st.session_state.rol == "Cliente":
     c1, c2, c3, c4 = st.columns(4)
@@ -58,7 +52,7 @@ if st.session_state.rol == "Cliente":
     if c3.button("🛒 Crear Pedido", use_container_width=True): st.session_state.nav = "Crear Pedido"
     if c4.button("🔎 Mi Pedido", use_container_width=True): st.session_state.nav = "Estado"
 else:
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     if c1.button("📊 Resumen", use_container_width=True): st.session_state.nav = "Resumen"
     if c2.button("⚙️ Precios", use_container_width=True): st.session_state.nav = "Precios"
     if c3.button("🚪 Salir", use_container_width=True): 
@@ -67,55 +61,57 @@ else:
 
 st.divider()
 
-# --- 4. CONTENIDO DINÁMICO ---
+# --- 4. CONTENIDO ---
 if st.session_state.nav == "Inicio":
     st.markdown("#### **Te lo llevamos a casa**")
     st.write("Calidad seleccionada en frutas, verduras, carbón y más.")
 
-elif st.session_state.nav == "Nosotros":
-    st.header("Sobre Nosotros")
-    st.write("Soy Luciana y en FRUTAS WC nos enfocamos en que recibas lo mejor del campo en tu hogar.")
-
 elif st.session_state.nav == "Crear Pedido":
-    st.header("📝 Nota de Pedido WC")
-    st.write("Completá las columnas de Cantidad y KG/Un para armar tu pedido:")
+    st.header("🛒 Armá tu Pedido")
     
-    # El cliente edita directamente sobre la tabla
-    nombre_cliente = st.text_input("Nombre y Apellido del Cliente / Negocio")
-    fecha_entrega = st.date_input("Fecha de entrega", min_value=datetime.now().date() + timedelta(days=1))
+    nombre_c = st.text_input("Nombre / Negocio")
+    fecha_e = st.date_input("Fecha de entrega", min_value=datetime.now().date() + timedelta(days=1))
     
-    # Editor de tabla: solo mostramos Detalle, Medida, Cantidad y Pedido_KG_UN
-    df_pedido = st.data_editor(
-        st.session_state.catalogo_wc,
-        column_config={
-            "DETALLE": st.column_config.Column("Producto", disabled=True),
-            "MEDIDA": st.column_config.Column("Unidad", disabled=True),
-            "CANTIDAD": st.column_config.NumberColumn("Cantidad (Bolsas/Bultos)", min_value=0, step=1),
-            "PEDIDO_KG_UN": st.column_config.NumberColumn("Total KG / Unidades", min_value=0.0, step=0.5),
-        },
-        hide_index=True,
-        use_container_width=True
-    )
+    st.write("---")
+    st.subheader("Agregar productos:")
+    col_p, col_c, col_k, col_b = st.columns([3, 1, 1, 1])
     
-    if st.button("🚀 Confirmar y Enviar Pedido"):
-        if nombre_cliente:
-            # Filtramos solo lo que tiene cantidad > 0
-            items_pedidos = df_pedido[(df_pedido['CANTIDAD'] > 0) | (df_pedido['PEDIDO_KG_UN'] > 0)]
-            if not items_pedidos.empty:
-                resumen = {
-                    "Cliente": nombre_cliente,
-                    "Fecha": fecha_entrega,
-                    "Items": items_pedidos.to_dict('records'),
-                    "Estado": "Pendiente"
-                }
-                st.session_state.pedidos_db.append(resumen)
-                st.success(f"¡Pedido de {nombre_cliente} registrado! Ya podés cerrar la página.")
+    with col_p:
+        item_sel = st.selectbox("Seleccioná un producto", PRODUCTOS_WC)
+    with col_c:
+        cant_sel = st.number_input("Cant (Bultos)", min_value=0, step=1)
+    with col_k:
+        kg_sel = st.number_input("KG / Unid.", min_value=0.0, step=0.5)
+    with col_b:
+        st.write(" ") # Espaciador
+        if st.button("➕ Añadir"):
+            if cant_sel > 0 or kg_sel > 0:
+                st.session_state.lista_temporal.append({
+                    "Producto": item_sel,
+                    "Cant": cant_sel,
+                    "KG_Un": kg_sel
+                })
             else:
-                st.warning("El pedido está vacío.")
-        else:
-            st.error("Por favor, ingresá tu nombre.")
+                st.warning("Poné una cantidad.")
 
-# --- 5. ACCESO ADMIN (AL FINAL) ---
+    # Mostrar la lista que se está armando
+    if st.session_state.lista_temporal:
+        st.write("### Tu lista actual:")
+        df_temp = pd.DataFrame(st.session_state.lista_temporal)
+        st.table(df_temp)
+        
+        if st.button("🗑️ Borrar última línea"):
+            st.session_state.lista_temporal.pop()
+            st.rerun()
+            
+        if st.button("🚀 CONFIRMAR PEDIDO FINAL"):
+            if nombre_c:
+                st.success(f"¡Pedido de {nombre_c} enviado con éxito!")
+                st.session_state.lista_temporal = [] # Limpiar para el próximo
+            else:
+                st.error("Falta tu nombre.")
+
+# --- 5. ACCESO ADMIN (FINAL) ---
 st.write("---")
 with st.expander("🔒 Acceso Administración"):
     u = st.text_input("Usuario")
@@ -127,10 +123,5 @@ with st.expander("🔒 Acceso Administración"):
             st.rerun()
 
 # --- 6. WHATSAPP ---
-wa_link = "https://wa.me/543516422893?text=Hola%20Luciana%2C%20tengo%20una%20consulta%20sobre%20mi%20pedido%20en%20FRUTAS%20WC"
-st.markdown(f'''
-    <a href="{wa_link}" class="wa-float" target="_blank">
-        <img src="https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg" width="20" height="20">
-        Consultas a nuestro WhatsApp
-    </a>
-    ''', unsafe_allow_html=True)
+wa_link = "https://wa.me/543516422893?text=Consultas%20FRUTAS%20WC"
+st.markdown(f'<a href="{wa_link}" class="wa-float" target="_blank">💬 WhatsApp</a>', unsafe_allow_html=True)
