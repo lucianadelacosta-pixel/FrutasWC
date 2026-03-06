@@ -55,7 +55,7 @@ if 'catalogo' not in st.session_state:
     })
 
 # --- 3. NAVEGACIÓN PRINCIPAL (CLIENTE O ADMIN) ---
-st.title("🍎 Frutas WLC")
+st.title("🍎 Frutas WC")
 
 if st.session_state.rol == "Cliente":
     c1, c2, c3, c4 = st.columns(4)
